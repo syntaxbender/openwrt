@@ -1,12 +1,41 @@
 # P-2812HNU-F1 OpenWrt builds
 
 This fork carries a small ImageBuilder recipe for **Zyxel P-2812HNU-F1**.
-Both profiles use the official stable OpenWrt `lantiq/xrx200` device kernel.
+Both variants use the official stable OpenWrt `lantiq/xrx200` device kernel.
 The first reviewed baseline is **25.12.6**; the daily check follows stable
 **25.12.x** maintenance releases, excluding release candidates and snapshots.
 A new major series requires a reviewed config/key/compatibility update.
 
-| Profile | Management | Retained | Removed |
+## Relationship to upstream OpenWrt
+
+The image-generation path follows OpenWrt's supported
+[ImageBuilder workflow](https://openwrt.org/docs/guide-user/additional-software/imagebuilder).
+Both variants select the existing upstream device profile with
+`make image PROFILE=zyxel_p-2812hnu-f1`. `normal` and `lite` are package
+variants of that one device profile, not new OpenWrt hardware profiles.
+The official ImageBuilder supplies the device definition, kernel, image
+layout and sysupgrade metadata. `PACKAGES=` selects the variant's packages;
+`FILES=` adds the explicitly scoped P2812 startup and preservation files.
+CI adds input verification, repeated-build comparison and publication around
+that command; it does not replace OpenWrt's image-generation rules.
+
+The fork retains upstream's other device definitions and build system.
+The P2812 files are not a global top-level `files/` overlay and are not
+automatically included when building another device from the source tree.
+Selecting one device in this CI is consistent with upstream's per-device
+image workflow; a generic all-device CI is not required for that alignment.
+
+The late PCI worker, optional DSM hook and preservation list remain
+downstream customizations, not fixes claimed to be accepted upstream. They
+are added only to these P2812 images. The PCI worker also checks the exact
+F1 board at runtime; the DSM hook replaces the reviewed package init file
+through `FILES=` rather than patching the shared upstream package source.
+Sharing a CPU or SoC alone does not enable these customizations on another
+board. If a future fix needs a rebuilt package or kernel, use OpenWrt's
+package/target patch mechanisms and SDK or source build, rather than treating
+this ImageBuilder job as a build of modified fork sources.
+
+| Variant | Management | Retained | Removed |
 | --- | --- | --- | --- |
 | `normal` | LuCI + SSH | Official device defaults, VDSL/PTM, PPPoE, Wi-Fi, IPv6, USB/ATM support | None from official defaults |
 | `lite` | SSH | VDSL/PTM, PPPoE, Wi-Fi, IPv6, DHCP/DNS, firewall | LuCI/web/RPC UI stack, USB host/LED support, ATM/PPPoA |
@@ -20,7 +49,7 @@ experimental CPU/PCI clock changes are not included. Use the MDIO1/GPHY1
 P2812 U-Boot port; older custom ports that omit this initialization can leave
 Ethernet ports unavailable.
 
-`lite` is a reduced feature profile, **not proof of stable operation with
+`lite` is a reduced feature variant, **not proof of stable operation with
 64 MiB RAM**. The development device has 128 MiB. Test normal NAND operation,
 DSL/Wi-Fi/NAT load, available memory and OOM behavior before any64MiB claim.
 
@@ -32,7 +61,7 @@ using the pinned OpenWrt public key. The verification executable comes from
 a separately SHA-256-pinned official ImageBuilder bootstrap. APK feed
 signature checks remain enabled; changed keys or init bases fail closed.
 
-Each profile builds twice in fresh ImageBuilder directories. Package lists,
+Each variant builds twice in fresh ImageBuilder directories. Package lists,
 kernel bytes and sysupgrade bytes must match. The kernel must fit the5MiB
 partition and its decoded payload must fit the16MiB bootloader bound.
 The packaged rootfs is inspected with `unsquashfs4`, without mounting it.
@@ -40,7 +69,7 @@ The helper scripts, startup link and preservation list must match the recipe.
 
 A release contains the two sysupgrade images, their kernels and package
 manifests, recipe sources, `build-manifest.json` and `SHA256SUMS`. Publication
-occurs only after both profiles pass; interrupted uploads remain drafts.
+occurs only after both variants pass; interrupted uploads remain drafts.
 The source commit and exact ImageBuilder/package-input hashes are recorded.
 Feeds may change or retire older packages, so retain the input cache if you
 need a future rebuild with exactly the same package versions. Matching local
