@@ -35,3 +35,9 @@ git-src
 .cproject
 .ccache
 .vscode*
+
+# P2812 CI local build output
+/p2812-work/
+/p2812-ci/__pycache__/
+/p2812-ci/tests/__pycache__/
+/p2812-dsl/__pycache__/

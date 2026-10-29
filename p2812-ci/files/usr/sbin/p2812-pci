@@ -1,0 +1,45 @@
+#!/bin/sh
+# The isolated filesystem tests replace only these two initializers.
+ROOT=''
+SHA256SUM='/usr/bin/sha256sum'
+
+message() { logger -t p2812-pci "$*" || :; }
+fail() { message "$*"; exit 1; }
+
+board=$(cat "$ROOT/tmp/sysinfo/board_name") || exit 1
+[ "$board" = 'zyxel,p-2812hnu-f1' ] || exit 0
+
+config="$ROOT/etc/p2812-pci.sha256"
+firmware="$ROOT/lib/firmware/RT3062.eeprom"
+[ -f "$config" ] && [ ! -L "$config" ] || fail 'Missing calibration checksum metadata'
+read -r expected extra < "$config" || fail 'Invalid calibration checksum metadata'
+case "$expected" in ''|*[!0-9a-f]*) fail 'Invalid calibration checksum';; esac
+[ "${#expected}" = 64 ] && [ -z "$extra" ] || fail 'Invalid calibration checksum length'
+[ -d "$ROOT/lib/firmware" ] && [ ! -L "$ROOT/lib/firmware" ] &&
+	[ -f "$firmware" ] && [ ! -L "$firmware" ] || fail 'Calibration must be a regular file'
+[ "$(wc -c < "$firmware")" -eq 512 ] || fail 'Calibration size differs'
+actual=$("$SHA256SUM" "$firmware") || fail 'Cannot checksum calibration'
+[ "${actual%% *}" = "$expected" ] || fail 'Calibration checksum differs'
+
+card="$ROOT/sys/bus/pci/devices/0000:00:0e.0"
+identity() {
+	[ "$(cat "$card/vendor")" = 0x1814 ] && [ "$(cat "$card/device")" = 0x3062 ]
+}
+if [ -d "$card" ]; then
+	identity || fail 'Unexpected PCI identity in slot 0e'
+	message 'RT3062 already present; no PCI rescan'
+	exit 0
+fi
+
+[ -w "$ROOT/sys/bus/pci/rescan" ] || fail 'PCI rescan unavailable'
+# A RAM marker bounds this worker to one write attempt per boot.
+once="$ROOT/tmp/p2812-pci-once"
+[ ! -e "$once" ] && [ ! -L "$once" ] || exit 0
+mkdir -m 700 "$once" || exit 0
+printf '1\n' > "$ROOT/sys/bus/pci/rescan" || fail 'PCI rescan write failed'
+if [ -d "$card" ]; then
+	identity || fail 'Unexpected PCI identity after rescan'
+	message 'RT3062 discovered after one PCI rescan'
+else
+	message 'RT3062 absent after one PCI rescan; no retry'
+fi

@@ -1,0 +1,6 @@
+#!/bin/sh /etc/rc.common
+# P-2812HNU-F1: one PCI discovery attempt during late startup.
+START=99
+boot() {
+	/usr/sbin/p2812-pci
+}

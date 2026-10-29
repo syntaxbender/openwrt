@@ -1,0 +1,66 @@
+{
+  "schema": 1,
+  "repository": "syntaxbender/openwrt",
+  "series": "25.12",
+  "baseline": "25.12.6",
+  "target": "lantiq/xrx200",
+  "profile": "zyxel_p-2812hnu-f1",
+  "board": "zyxel,p-2812hnu-f1",
+  "kernel_partition_bytes": 5242880,
+  "max_decoded_kernel_bytes": 16777216,
+  "bootstrap": {
+    "version": "25.12.6",
+    "archive": "openwrt-imagebuilder-25.12.6-lantiq-xrx200.Linux-x86_64.tar.zst",
+    "sha256": "77ae2512525676e777b6bafedff56c16d6e209aab0d163c3b9c0ab8146b964a2"
+  },
+  "profiles": {
+    "normal": {
+      "packages": [
+        "luci"
+      ],
+      "description": "Official P2812 defaults + LuCI + proven late PCI worker."
+    },
+    "lite": {
+      "packages": [
+        "-luci",
+        "-luci-light",
+        "-luci-ssl",
+        "-uhttpd",
+        "-uhttpd-mod-ubus",
+        "-rpcd",
+        "-rpcd-mod-file",
+        "-rpcd-mod-iwinfo",
+        "-rpcd-mod-luci",
+        "-rpcd-mod-rpcsys",
+        "-rpcd-mod-rrdns",
+        "-rpcd-mod-ucode",
+        "-kmod-usb-dwc2",
+        "-kmod-usb-ledtrig-usbport",
+        "-kmod-ltq-atm-vr9",
+        "-kmod-atm",
+        "-br2684ctl",
+        "-ppp-mod-pppoa"
+      ],
+      "description": "SSH management, VDSL/PTM+PPPoE+WiFi+IPv6 preserved; no LuCI/USB/ATM. Not certified for64MiB."
+    }
+  },
+  "required_packages": [
+    "dnsmasq",
+    "dropbear",
+    "firewall4",
+    "netifd",
+    "ppp",
+    "ppp-mod-pppoe",
+    "kmod-ltq-vdsl-vr9-mei",
+    "kmod-ltq-vdsl-vr9",
+    "kmod-ltq-ptm-vr9",
+    "ltq-vdsl-vr9-app",
+    "kmod-rt2800-pci",
+    "wpad-basic-mbedtls"
+  ],
+  "proven_worker_sha256": "6179dc66a3c8adf6bd36167c63fb7f4d6d4beb101486a9dfea84ccb9714d12c7",
+  "proven_init_sha256": "6c857c22b207bbcc250280be0b707e5f3adb89249b958e50a1fea5f5485df355",
+  "DSL_policy": "Public images carry the GPL DSM init hook and stock OpenWrt DSP packages. Existing AVM DSP must be preserved/provisioned locally; AVM source-only extractor stays separate, no vendor blob/generated vendor overlay in public releases.",
+  "dsl_init_base_sha256": "f704597b4993e7c38b0a8b389df88bcfcfd59b7fa12715b97bec961a76efbb0a",
+  "dsl_init_patched_sha256": "4176e76daa09bb6bb31651f7c0c9d0b63bd93304a83b5f247d9db4d9565415fa"
+}

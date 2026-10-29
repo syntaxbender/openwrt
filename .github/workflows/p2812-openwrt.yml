@@ -1,0 +1,103 @@
+name: P2812 OpenWrt normal and lite
+
+on:
+  schedule:
+    - cron: '31 4 * * *'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'latest or a stable 25.12.x version'
+        default: latest
+        required: true
+        type: string
+  push:
+    branches: [main]
+    paths: ['p2812-ci/**', 'p2812-dsl/**', 'P2812-OPENWRT.md', '.github/workflows/p2812-openwrt.yml']
+  pull_request:
+    paths: ['p2812-ci/**', 'p2812-dsl/**', '.github/workflows/p2812-openwrt.yml']
+
+permissions:
+  contents: read
+
+concurrency:
+  group: p2812-openwrt-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    if: github.repository == 'syntaxbender/openwrt'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    outputs:
+      build: ${{ steps.release.outputs.build }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - name: Install ImageBuilder host prerequisites
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends build-essential ca-certificates file gawk gettext git libncurses-dev libssl-dev patch perl python3 python3-setuptools rsync unzip wget zstd
+      - name: Exercise selection, memory bounds, public assets and PCI worker guards
+        run: python3 -B -m unittest discover -s p2812-ci/tests -p 'test_*.py'
+      - name: Select a fresh runner directory
+        run: printf 'P2812_WORK=%s/p2812-imagebuilder\n' "$RUNNER_TEMP" >> "$GITHUB_ENV"
+      - name: Verify signed official checksums and select the P2812 release
+        env:
+          SELECTED_VERSION: ${{ inputs.version || 'latest' }}
+        run: python3 -B p2812-ci/build.py prepare --work "$P2812_WORK" --version "$SELECTED_VERSION"
+      - name: Check whether this version and recipe already have a release
+        id: release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 -B p2812-ci/release.py plan --work "$P2812_WORK" --query-github
+      - name: Build each profile twice in fresh ImageBuilder trees
+        if: steps.release.outputs.build == 'true'
+        run: |
+          python3 -B p2812-ci/build.py build --work "$P2812_WORK" --flavor normal --round r1
+          python3 -B p2812-ci/build.py build --work "$P2812_WORK" --flavor normal --round r2
+          python3 -B p2812-ci/build.py build --work "$P2812_WORK" --flavor lite --round r1
+          python3 -B p2812-ci/build.py build --work "$P2812_WORK" --flavor lite --round r2
+          python3 -B p2812-ci/build.py bundle --work "$P2812_WORK"
+      - name: Retain complete public release assets and plan
+        if: steps.release.outputs.build == 'true'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: p2812-openwrt-release
+          path: |
+            ${{ env.P2812_WORK }}/release-assets/
+            ${{ env.P2812_WORK }}/release-plan.json
+          if-no-files-found: error
+          retention-days: 14
+      - name: Retain build evidence and failure logs
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: p2812-openwrt-evidence
+          path: |
+            ${{ env.P2812_WORK }}/selection.json
+            ${{ env.P2812_WORK }}/*/build.log
+            ${{ env.P2812_WORK }}/*/result.json
+          if-no-files-found: warn
+          retention-days: 14
+  publish:
+    needs: build
+    if: needs.build.outputs.build == 'true' && github.repository == 'syntaxbender/openwrt' && github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+      actions: read
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: p2812-openwrt-release
+          path: ${{ runner.temp }}/p2812-public-release
+      - name: Verify complete assets and publish both profiles together
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_COMMIT: ${{ github.sha }}
+        run: python3 -B p2812-ci/release.py publish --assets "$RUNNER_TEMP/p2812-public-release/release-assets" --plan "$RUNNER_TEMP/p2812-public-release/release-plan.json" --commit "$SOURCE_COMMIT"
