@@ -66,15 +66,31 @@ class PublicationChecks(unittest.TestCase):
  def test_public_asset_set_and_payload_hashes(self):
   with tempfile.TemporaryDirectory() as tmp:
    d=Path(tmp);selection=dict(version='25.12.6',recipe_sha256='b'*64);plan=dict(version='25.12.6',tag=release.tag_for(selection));records={}
-   for flavor in ['normal','lite']:
-    prefix='p2812-openwrt-25.12.6-'+flavor;fw=b'NOT REAL FIRMWARE';k=kernel();text=manifest(flavor)
+   for flavor,dsl in build.dsl_variants.variants(build.CONFIG):
+    variant=build.dsl_variants.identity(build.CONFIG,flavor,dsl)
+    prefix='p2812-openwrt-25.12.6-'+variant;fw=b'NOT REAL FIRMWARE';k=kernel();text=manifest(flavor)
     (d/(prefix+'-sysupgrade.bin')).write_bytes(fw);(d/(prefix+'-kernel.uImage')).write_bytes(k);(d/(prefix+'.manifest')).write_text(text)
-    records[flavor]=dict(sysupgrade_sha256=hashlib.sha256(fw).hexdigest(),kernel=build.validate_kernel(k),packages=build.validate_manifest(flavor,text))
+    records[variant]=dict(flavor=flavor,dsl=dsl,variant=variant,dsl_firmware=build.dsl_variants.firmware(build.CONFIG,dsl),AVM_companion_embedded=dsl=='avm',own_EEPROM_embedded=False,overlay_verified=True,sysupgrade_sha256=hashlib.sha256(fw).hexdigest(),kernel=build.validate_kernel(k),packages=build.validate_manifest(flavor,text))
    build.write_json(d/'build-manifest.json',dict(selection=selection,profiles=records,identical_rebuilds=2));(d/'p2812-recipes.tar.gz').write_bytes(b'TEST')
+   lock=json.loads((build.ROOT/'p2812-dsl/inputs.lock.json').read_text())
+   (d/'AVM-DSL-PROVENANCE.txt').write_bytes(build.dsl_variants.provenance(build.CONFIG,lock))
    (d/'SHA256SUMS').write_text(''.join(build.sha(p)+'  '+p.name+'\n' for p in sorted(d.iterdir())))
    release.verify_assets(d,plan)
    (d/'private-eeprom.bin').write_bytes(b'FAKE')
    with self.assertRaises(RuntimeError):release.verify_assets(d,plan)
-   (d/'private-eeprom.bin').unlink();p=d/'p2812-openwrt-25.12.6-lite-sysupgrade.bin';p.write_bytes(b'CORRUPTED')
+   (d/'private-eeprom.bin').unlink()
+   # Valid checksums cannot hide swapped DSL identities or a missing variant.
+   def refresh_sums():
+    (d/'SHA256SUMS').write_text(''.join(build.sha(p)+'  '+p.name+'\n' for p in sorted(d.iterdir()) if p.name!='SHA256SUMS'))
+   saved=(d/'build-manifest.json').read_bytes()
+   for changed in ['swapped','missing','embedded-claim']:
+    m=json.loads(saved)
+    if changed=='swapped':m['profiles']['normal-stock']['dsl']='avm'
+    elif changed=='missing':del m['profiles']['lite-avm']
+    else:m['profiles']['lite-stock']['AVM_companion_embedded']=True
+    build.write_json(d/'build-manifest.json',m);refresh_sums()
+    with self.assertRaises(RuntimeError):release.verify_assets(d,plan)
+   (d/'build-manifest.json').write_bytes(saved);refresh_sums();release.verify_assets(d,plan)
+   p=d/'p2812-openwrt-25.12.6-lite-avm-sysupgrade.bin';p.write_bytes(b'CORRUPTED')
    with self.assertRaises(RuntimeError):release.verify_assets(d,plan)
 if __name__=='__main__':unittest.main()

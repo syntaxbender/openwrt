@@ -3,6 +3,7 @@
 """Official ImageBuilder + public P2812 overlay. No device or flash access."""
 import argparse,gzip,hashlib,io,json,lzma,os,re,shutil,stat,struct,subprocess,sys,tarfile,urllib.request,zlib
 from pathlib import Path
+import dsl_variants
 HERE=Path(__file__).resolve().parent
 ROOT=HERE.parent
 CONFIG=json.loads((HERE/'config.json').read_text())
@@ -109,7 +110,7 @@ def prepare(work,selected):
  ib=fetch(base+name,cache/name,sums_map[name]);profiles_path=fetch(base+'profiles.json',cache/'profiles.json',sums_map['profiles.json'],limit=8*1024*1024)
  profiles=json.loads(profiles_path.read_text());need(profiles['version_number']==selected and profiles['target']==CONFIG['target'] and CONFIG['profile'] in profiles['profiles'],'Target/profile metadata mismatch')
  epoch=profiles['source_date_epoch'];need(isinstance(epoch,int) and epoch>0,'Missing reproducible timestamp')
- # The DSM hook remains GPL source; no AVM blob is included in either image.
+ # Verify compatibility of the GPL DSM hook with the selected official release.
  url=f'https://raw.githubusercontent.com/openwrt/openwrt/v{selected}/package/network/config/ltq-vdsl-vr9-app/files/dsl_control'
  with urllib.request.urlopen(url,timeout=30) as response:dsl=response.read(65536)
  need(digest(dsl)==CONFIG['dsl_init_base_sha256'],'DSL init changed upstream; review companion compatibility before building')
@@ -118,6 +119,18 @@ def prepare(work,selected):
  need(sha(HERE/'files/usr/sbin/p2812-pci')==CONFIG['proven_worker_sha256'] and sha(HERE/'files/etc/init.d/p2812-pci')==CONFIG['proven_init_sha256'],'Proven PCI helper changed')
  selection={'version':selected,'target':CONFIG['target'],'profile':CONFIG['profile'],'source_date_epoch':epoch,'imagebuilder_path':str(ib.resolve()),'imagebuilder_sha256':sha(ib),'checksums_signature_verified':True,'recipe_sha256':recipe_hash(),'profiles_sha256':sha(profiles_path),'bootstrap_sha256':boot['sha256']}
  write_json(work/'selection.json',selection);return selection
+
+def prepare_avm(work):
+ selection=json.loads((work/'selection.json').read_text());need(selection['recipe_sha256']==recipe_hash(),'Recipe changed after preparation')
+ output=work/'avm';need(not output.exists(),'AVM verification output must be fresh')
+ with (work/'avm.log').open('wb') as log:
+  run([sys.executable,'-B',ROOT/'p2812-dsl/verify_avm.py','--cache',work/'dsl-inputs','--work',output],stdout=log,stderr=subprocess.STDOUT)
+ lock=json.loads((ROOT/'p2812-dsl/inputs.lock.json').read_text());dsl_variants.provenance(CONFIG,lock)
+ result=json.loads((output/'verification.json').read_text());spec=dsl_variants.firmware(CONFIG,'avm')
+ need(result['verified'] and result['embedded_MD5_match'],'AVM extraction verification failed')
+ dsl_variants.verify_firmware(CONFIG,'avm',(output/'files'/spec['rootfs_file']).read_bytes())
+ need(sha(output/'files/etc/init.d/dsl_control')==CONFIG['dsl_init_patched_sha256'],'Extracted companion init differs')
+ return {'verified':True,'firmware_sha256':spec['sha256'],'firmware_bytes':spec['bytes']}
 
 def package_names(manifest):
  names=[]
@@ -145,7 +158,7 @@ def validate_kernel(data):
  need(decoder.eof and not decoder.unused_data and len(raw)<=CONFIG['max_decoded_kernel_bytes'],'Kernel decode exceeds16MiB or trailingdata')
  return {'compressed_bytes':len(data),'decoded_bytes':len(raw),'sha256':digest(data),'CRC32':f'{dcrc:08x}'}
 
-def validate_output(builder,out,flavor,selection):
+def validate_output(builder,out,flavor,dsl,selection):
  images=list(out.glob('*zyxel_p-2812hnu-f1*sysupgrade.bin'));need(len(images)==1,'Expected exactly one P2812 sysupgrade image')
  image=images[0];manifest=list(out.glob('*.manifest'));need(len(manifest)==1,'Expected one package manifest')
  names=validate_manifest(flavor,manifest[0].read_text())
@@ -156,32 +169,45 @@ def validate_output(builder,out,flavor,selection):
   rootfs=out/'rootfs.check';rootfs.write_bytes(archive.extractfile(roots[0]).read())
  info=validate_kernel(kernel)
  tool=builder/'staging_dir/host/bin/unsquashfs4'
- paths=['usr/sbin/p2812-pci','etc/init.d/p2812-pci','etc/init.d/dsl_control','lib/upgrade/keep.d/p2812','etc/p2812-ci.json']
+ paths=['usr/sbin/p2812-pci','etc/init.d/p2812-pci','etc/init.d/dsl_control','lib/upgrade/keep.d/p2812','etc/p2812-ci.json','etc/uci-defaults/99-p2812-dsl-profile']
  for name in paths:
   actual=subprocess.check_output([str(tool),'-cat',str(rootfs),name],stderr=subprocess.DEVNULL)
   need(actual==(out/'overlay'/name).read_bytes(),'Rootfs overlay differs: '+name)
  listing=subprocess.check_output([str(tool),'-ll',str(rootfs)],stderr=subprocess.DEVNULL).decode()
  need(re.search(r'S99p2812-pci -> (?:\.\./init.d/p2812-pci|/etc/init.d/p2812-pci)',listing),'Startup symlink missing')
- need(not re.search(r'/RT3062\.eeprom$|avm-vrx200-a-5\.9\.1\.4\.0\.7\.bin',listing,re.M),'Private calibration or proprietary companion embedded')
+ need(not re.search(r'/RT3062\.eeprom$',listing,re.M),'Private calibration embedded')
+ avm_present='avm-vrx200-a-5.9.1.4.0.7.bin' in listing
+ need(avm_present==(dsl=='avm'),'Wrong DSL companion presence for '+dsl)
+ spec=dsl_variants.firmware(CONFIG,dsl)
+ payload=subprocess.check_output([str(tool),'-cat',str(rootfs),spec['rootfs_file']],stderr=subprocess.DEVNULL)
+ dsl_variants.verify_firmware(CONFIG,dsl,payload)
+ need('lantiq-vrx200-a.bin -> xcpe_581816_580B11.bin' in listing,'Stock firmware alias differs')
  (out/'kernel.uImage').write_bytes(kernel);rootfs.unlink()
- return {'version':selection['version'],'flavor':flavor,'hardware_tested':False,'stable_64MiB_proven':False,'kernel':info,'sysupgrade_sha256':sha(image),'sysupgrade_bytes':image.stat().st_size,'packages':names,'overlay_verified':True,'PCI_worker_same_as_device_proven':True,'own_EEPROM_embedded':False,'AVM_companion_embedded':False,'NAND_or_device_access':False}
+ return {'version':selection['version'],'flavor':flavor,'dsl':dsl,'variant':dsl_variants.identity(CONFIG,flavor,dsl),'dsl_firmware':spec,'hardware_tested':False,'stable_64MiB_proven':False,'kernel':info,'sysupgrade_sha256':sha(image),'sysupgrade_bytes':image.stat().st_size,'packages':names,'overlay_verified':True,'PCI_worker_same_as_device_proven':True,'own_EEPROM_embedded':False,'AVM_companion_embedded':dsl=='avm','NAND_or_device_access':False}
 
-def build(work,flavor,round_id):
+def build(work,flavor,dsl,round_id):
  selection=json.loads((work/'selection.json').read_text());need(selection['recipe_sha256']==recipe_hash(),'Recipe changed after preparation')
  need(flavor in CONFIG['profiles'] and re.fullmatch(r'[a-zA-Z0-9_-]+',round_id),'Unknown build profile/run')
- out=work/(flavor+'-'+round_id);need(not out.exists(),'Build output must be fresh');out.mkdir()
+ variant=dsl_variants.identity(CONFIG,flavor,dsl)
+ out=work/(variant+'-'+round_id);need(not out.exists(),'Build output must be fresh');out.mkdir()
  builder=safe_extract(Path(selection['imagebuilder_path']),out/'builder')
  text=(builder/'.config').read_text();need('CONFIG_SIGNATURE_CHECK=y' in text and 'CONFIG_USE_APK=y' in text,'Signed APK verification not enabled')
  overlay=out/'overlay';shutil.copytree(HERE/'files',overlay,symlinks=True)
- write_json(overlay/'etc/p2812-ci.json',{'version':selection['version'],'flavor':flavor,'recipe_sha256':selection['recipe_sha256'],'private_calibration':'Provision or preserve your own RT3062.eeprom and checksum locally.','stable_64MiB_proven':False})
+ spec=dsl_variants.firmware(CONFIG,dsl)
+ if dsl=='avm':
+  verified=json.loads((work/'avm/verification.json').read_text());need(verified['verified'] and verified['embedded_MD5_match'],'Run prepare-avm before AVM builds')
+  source=work/'avm/files'/spec['rootfs_file'];dsl_variants.verify_firmware(CONFIG,dsl,source.read_bytes())
+  target=overlay/spec['rootfs_file'];target.parent.mkdir(parents=True,exist_ok=True);shutil.copyfile(source,target);target.chmod(0o644)
+ firstboot=overlay/'etc/uci-defaults/99-p2812-dsl-profile';firstboot.parent.mkdir(parents=True,exist_ok=True);firstboot.write_bytes(dsl_variants.firstboot(CONFIG,dsl));firstboot.chmod(0o755)
+ write_json(overlay/'etc/p2812-ci.json',{'version':selection['version'],'flavor':flavor,'dsl':dsl,'variant':variant,'dsl_firmware':spec,'AVM_companion_embedded':dsl=='avm','recipe_sha256':selection['recipe_sha256'],'private_calibration':'Provision or preserve your own RT3062.eeprom and checksum locally.','stable_64MiB_proven':False})
  epoch=selection['source_date_epoch']
  for p in overlay.rglob('*'):
   if not p.is_symlink():os.utime(p,(epoch,epoch))
  env=dict(os.environ,SOURCE_DATE_EPOCH=str(epoch),LC_ALL='C.UTF-8',TZ='UTC')
  args=['make','image','PROFILE='+CONFIG['profile'],'PACKAGES='+' '.join(CONFIG['profiles'][flavor]['packages']),
-       'FILES='+str(overlay.resolve()),'BIN_DIR='+str(out.resolve()),'EXTRA_IMAGE_NAME=p2812-'+flavor]
+       'FILES='+str(overlay.resolve()),'BIN_DIR='+str(out.resolve()),'EXTRA_IMAGE_NAME=p2812-'+variant]
  with (out/'build.log').open('wb') as log:run(args,cwd=builder,env=env,stdout=log,stderr=subprocess.STDOUT)
- result=validate_output(builder,out,flavor,selection)
+ result=validate_output(builder,out,flavor,dsl,selection)
  result['package_inputs_sha256']={str(p.relative_to(builder)):sha(p) for p in sorted((builder/'dl').rglob('*')) if p.is_file() and p.suffix in ['.apk','.adb']}
  write_json(out/'result.json',result);return result
 
@@ -189,19 +215,21 @@ def bundle(work,rounds):
  need(len(rounds)==2 and len(set(rounds))==2,'Two distinct build rounds are required')
  selection=json.loads((work/'selection.json').read_text());assets=work/'release-assets';need(not assets.exists(),'Release assets already exist');assets.mkdir()
  results={}
- for flavor in CONFIG['profiles']:
-  dirs=[work/(flavor+'-'+r) for r in rounds];records=[json.loads((d/'result.json').read_text()) for d in dirs]
-  need(all(r['version']==selection['version'] and r['flavor']==flavor and r['overlay_verified'] for r in records),'Build evidence identity differs')
-  need(all(r['kernel']==records[0]['kernel'] and r['sysupgrade_sha256']==records[0]['sysupgrade_sha256'] and r['packages']==records[0]['packages'] for r in records),'Repeated build differs: '+flavor)
-  out=dirs[0];prefix='p2812-openwrt-'+selection['version']+'-'+flavor
+ for flavor,dsl in dsl_variants.variants(CONFIG):
+  variant=dsl_variants.identity(CONFIG,flavor,dsl)
+  dirs=[work/(variant+'-'+r) for r in rounds];records=[json.loads((d/'result.json').read_text()) for d in dirs]
+  need(all(r['version']==selection['version'] and r['flavor']==flavor and r['dsl']==dsl and r['variant']==variant and r['overlay_verified'] and r['dsl_firmware']==dsl_variants.firmware(CONFIG,dsl) and r['AVM_companion_embedded']==(dsl=='avm') and not r['own_EEPROM_embedded'] for r in records),'Build evidence identity differs')
+  need(all(r['kernel']==records[0]['kernel'] and r['sysupgrade_sha256']==records[0]['sysupgrade_sha256'] and r['packages']==records[0]['packages'] for r in records),'Repeated build differs: '+variant)
+  out=dirs[0];prefix='p2812-openwrt-'+selection['version']+'-'+variant
   image=next(out.glob('*zyxel_p-2812hnu-f1*sysupgrade.bin'));shutil.copy2(image,assets/(prefix+'-sysupgrade.bin'))
   shutil.copy2(out/'kernel.uImage',assets/(prefix+'-kernel.uImage'))
   shutil.copy2(next(out.glob('*.manifest')),assets/(prefix+'.manifest'))
-  results[flavor]=records[0]
+  results[variant]=records[0]
  need(len({r['kernel']['sha256'] for r in results.values()})==1,'Unexpected kernel difference between profiles')
  report={'selection':{k:v for k,v in selection.items() if not k.endswith('_path')},'profiles':results,'identical_rebuilds':len(rounds),
-         'scope':'Official ImageBuilder; no kernel patches. Firmware builds, not hardware validation. Stock OpenWrt DSL packages, AVM companion source only. Own calibration must be preserved/provisioned locally.'}
+         'scope':'Official ImageBuilder; no kernel patches or NAPI changes. Four normal/lite x stock/AVM images. AVM variants embed the verified proprietary DSP; no private calibration or credentials. Firmware builds, not hardware validation.'}
  write_json(assets/'build-manifest.json',report)
+ (assets/'AVM-DSL-PROVENANCE.txt').write_bytes(dsl_variants.provenance(CONFIG,json.loads((ROOT/'p2812-dsl/inputs.lock.json').read_text())))
  paths=[p for base in [HERE,ROOT/'p2812-dsl'] for p in base.rglob('*') if p.is_file() and '__pycache__' not in p.parts]
  paths += [ROOT/'P2812-OPENWRT.md',ROOT/'.github/workflows/p2812-openwrt.yml',ROOT/'.github/workflows/p2812-dsl-avm.yml']
  buffer=io.BytesIO()
@@ -219,11 +247,13 @@ def bundle(work,rounds):
 def main():
  p=argparse.ArgumentParser(description=__doc__);sub=p.add_subparsers(dest='command',required=True)
  a=sub.add_parser('prepare');a.add_argument('--work',type=Path,required=True);a.add_argument('--version',default='latest')
- a=sub.add_parser('build');a.add_argument('--work',type=Path,required=True);a.add_argument('--flavor',choices=CONFIG['profiles'],required=True);a.add_argument('--round',default='r1')
+ a=sub.add_parser('prepare-avm');a.add_argument('--work',type=Path,required=True)
+ a=sub.add_parser('build');a.add_argument('--work',type=Path,required=True);a.add_argument('--flavor',choices=CONFIG['profiles'],required=True);a.add_argument('--dsl',choices=CONFIG['dsl_variants'],required=True);a.add_argument('--round',default='r1')
  a=sub.add_parser('bundle');a.add_argument('--work',type=Path,required=True);a.add_argument('--rounds',nargs='+',default=['r1','r2'])
  a=p.parse_args();work=a.work.resolve();need(not work.is_relative_to(ROOT),'Build outside repository')
  if a.command=='prepare':result=prepare(work,a.version)
- elif a.command=='build':result=build(work,a.flavor,a.round)
+ elif a.command=='prepare-avm':result=prepare_avm(work)
+ elif a.command=='build':result=build(work,a.flavor,a.dsl,a.round)
  else:result=bundle(work,a.rounds)
  print(json.dumps(result,indent=2,sort_keys=True))
 if __name__=='__main__':main()

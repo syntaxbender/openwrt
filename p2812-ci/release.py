@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: GPL-2.0-only
-"""Plan/publish complete normal+lite releases; no account setup or device access."""
+"""Publish all four package/DSL variants together; no device access."""
 import argparse,json,os,re,subprocess
 from pathlib import Path
 import build
@@ -28,7 +28,8 @@ def plan(work,query):
 def verify_assets(directory,plan):
  manifest=json.loads((directory/'build-manifest.json').read_text())
  build.need(tag_for(manifest['selection'])==plan['tag'],'Published tag/manifest differs')
- build.need(manifest['identical_rebuilds']==2 and set(manifest['profiles'])=={'normal','lite'},'Both profiles need two matching builds')
+ variants={build.dsl_variants.identity(build.CONFIG,f,d) for f,d in build.dsl_variants.variants(build.CONFIG)}
+ build.need(manifest['identical_rebuilds']==2 and set(manifest['profiles'])==variants,'All four variants need two matching builds')
  sums={}
  for row in (directory/'SHA256SUMS').read_text().splitlines():
   match=re.fullmatch(r'([0-9a-f]{64})  ([a-zA-Z0-9_.-]+)',row);build.need(match is not None,'Invalid asset checksum row')
@@ -36,14 +37,20 @@ def verify_assets(directory,plan):
  actual={p.name for p in directory.iterdir() if p.is_file() and p.name!='SHA256SUMS'}
  build.need(actual==set(sums),'Missing/unaccounted release assets')
  for name,h in sums.items():build.need(build.sha(directory/name)==h,'Release checksum differs: '+name)
- required={'build-manifest.json','p2812-recipes.tar.gz'}
- for flavor in ['normal','lite']:
-  prefix='p2812-openwrt-'+plan['version']+'-'+flavor
+ required={'build-manifest.json','p2812-recipes.tar.gz','AVM-DSL-PROVENANCE.txt'}
+ lock=json.loads((build.ROOT/'p2812-dsl/inputs.lock.json').read_text())
+ build.need((directory/'AVM-DSL-PROVENANCE.txt').read_bytes()==build.dsl_variants.provenance(build.CONFIG,lock),'AVM provenance differs')
+ for flavor,dsl in build.dsl_variants.variants(build.CONFIG):
+  variant=build.dsl_variants.identity(build.CONFIG,flavor,dsl)
+  prefix='p2812-openwrt-'+plan['version']+'-'+variant
   required|={prefix+'-sysupgrade.bin',prefix+'-kernel.uImage',prefix+'.manifest'}
-  r=manifest['profiles'][flavor]
+  r=manifest['profiles'][variant]
+  build.need(r['flavor']==flavor and r['dsl']==dsl and r['variant']==variant and r['dsl_firmware']==build.dsl_variants.firmware(build.CONFIG,dsl),'DSL variant metadata differs')
+  build.need(r['AVM_companion_embedded']==(dsl=='avm') and not r['own_EEPROM_embedded'] and r['overlay_verified'],'DSL payload/private calibration evidence differs')
   build.need(build.sha(directory/(prefix+'-sysupgrade.bin'))==r['sysupgrade_sha256'],'Firmware differs from build evidence')
   build.need(build.validate_kernel((directory/(prefix+'-kernel.uImage')).read_bytes())==r['kernel'],'Kernel differs from build evidence')
   build.need(build.validate_manifest(flavor,(directory/(prefix+'.manifest')).read_text())==r['packages'],'Package manifest differs from build evidence')
+ build.need(len({r['kernel']['sha256'] for r in manifest['profiles'].values()})==1,'Variants must share the same official kernel')
  build.need(actual==required,'Unexpected public artifact set');return manifest
 
 def publish(directory,plan_path,commit):
@@ -53,17 +60,20 @@ def publish(directory,plan_path,commit):
  if release_exists(plan['repository'],plan['tag']):return {'already_published':True}
  notes=directory.parent/'release-notes.md'
  notes.write_text('P-2812HNU-F1 — OpenWrt '+plan['version']+'\n\n'
- 'Two matching builds of each profile passed image, kernel-size, package and overlay checks.\n\n'
+ 'Two matching builds of all four variants passed image, kernel-size, package and DSL payload checks.\n\n'
  '- normal: LuCI, stock device packages and the proven late PCI startup worker.\n'
  '- lite: SSH management; Wi-Fi/VDSL/PTM/PPPoE/IPv6 retained, LuCI/USB/ATM omitted.\n'
  '- Stock official kernel, no historical STP/MDIO or experimental CPU/clock patches.\n'
- '- GPL DSM hook included; proprietary AVM DSP and private EEPROM are not embedded. Preserve/provision your own local files before upgrading.\n'
+ '- normal-stock / lite-stock: official OpenWrt DSL firmware 5.8.1.8.1.6.\n'
+ '- normal-avm / lite-avm: embedded AVM DSL DSP 5.9.1.4.0.7, extracted from the hash-locked official AVM image.\n'
+ '- First boot selects the variant firmware and DSM mode, including when preserving settings; WAN credentials, LAN and Wi-Fi configuration are retained.\n'
+ '- AVM DSP remains proprietary; see AVM-DSL-PROVENANCE.txt. No private EEPROM or account data is embedded.\n'
  '- These exact images have not been tested on hardware. Lite is not certified for64MiB RAM. No automatic flashing.\n\n'
  'See P2812-OPENWRT.md for calibration/AVM preservation and first-install limits.\n\n'
  'Recipe: '+commit+'\nImageBuilder: '+m['selection']['imagebuilder_sha256']+'\n'
  'Upstream sources: https://github.com/openwrt/openwrt/tree/v'+plan['version']+'\n')
  args=['gh','release','create',plan['tag'],'--repo',plan['repository'],'--target',commit,
-       '--title','P2812 OpenWrt '+plan['version']+' — normal + lite','--notes-file',str(notes),'--draft']
+       '--title','P2812 OpenWrt '+plan['version']+' — normal/lite, stock/AVM','--notes-file',str(notes),'--draft']
  args += [str(p) for p in sorted(directory.iterdir()) if p.is_file()]
  existing=subprocess.run(['gh','api','repos/'+plan['repository']+'/releases/tags/'+plan['tag']],capture_output=True,text=True)
  if existing.returncode==0:

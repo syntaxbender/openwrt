@@ -1,4 +1,4 @@
-name: P2812 OpenWrt normal and lite
+name: P2812 OpenWrt normal/lite stock/AVM
 
 on:
   schedule:
@@ -37,7 +37,7 @@ jobs:
       - name: Install ImageBuilder host prerequisites
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends build-essential ca-certificates file gawk gettext git libncurses-dev libssl-dev patch perl python3 python3-setuptools rsync unzip wget zstd
+          sudo apt-get install -y --no-install-recommends build-essential ca-certificates file gawk gettext git libncurses-dev libssl-dev liblzma-dev bsdiff patch perl python3 python3-setuptools rsync unzip wget zstd
       - name: Exercise selection, memory bounds, public assets and PCI worker guards
         run: python3 -B -m unittest discover -s p2812-ci/tests -p 'test_*.py'
       - name: Select a fresh runner directory
@@ -51,13 +51,19 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: python3 -B p2812-ci/release.py plan --work "$P2812_WORK" --query-github
-      - name: Build each profile twice in fresh ImageBuilder trees
+      - name: Extract and verify the pinned AVM DSL payload
+        if: steps.release.outputs.build == 'true'
+        run: python3 -B p2812-ci/build.py prepare-avm --work "$P2812_WORK"
+      - name: Build all four variants twice in fresh ImageBuilder trees
         if: steps.release.outputs.build == 'true'
         run: |
-          python3 -B p2812-ci/build.py build --work "$P2812_WORK" --flavor normal --round r1
-          python3 -B p2812-ci/build.py build --work "$P2812_WORK" --flavor normal --round r2
-          python3 -B p2812-ci/build.py build --work "$P2812_WORK" --flavor lite --round r1
-          python3 -B p2812-ci/build.py build --work "$P2812_WORK" --flavor lite --round r2
+          for flavor in normal lite; do
+            for dsl in stock avm; do
+              for round in r1 r2; do
+                python3 -B p2812-ci/build.py build --work "$P2812_WORK" --flavor "$flavor" --dsl "$dsl" --round "$round"
+              done
+            done
+          done
           python3 -B p2812-ci/build.py bundle --work "$P2812_WORK"
       - name: Retain complete public release assets and plan
         if: steps.release.outputs.build == 'true'
@@ -76,6 +82,8 @@ jobs:
           name: p2812-openwrt-evidence
           path: |
             ${{ env.P2812_WORK }}/selection.json
+            ${{ env.P2812_WORK }}/avm/verification.json
+            ${{ env.P2812_WORK }}/avm.log
             ${{ env.P2812_WORK }}/*/build.log
             ${{ env.P2812_WORK }}/*/result.json
           if-no-files-found: warn
@@ -96,7 +104,7 @@ jobs:
         with:
           name: p2812-openwrt-release
           path: ${{ runner.temp }}/p2812-public-release
-      - name: Verify complete assets and publish both profiles together
+      - name: Verify complete assets and publish all four variants together
         env:
           GH_TOKEN: ${{ github.token }}
           SOURCE_COMMIT: ${{ github.sha }}

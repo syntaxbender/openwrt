@@ -11,9 +11,13 @@ applies the vendor BSDIFF data and verifies both the embedded MD5 and the final
 SHA-256. It does not mount images or execute vendor programs. The vendor's outer
 image signature is not separately verified cryptographically.
 
-The DSP remains proprietary. This repository and its CI artifacts contain the
-source recipe and verification metadata. Vendor images, DSP blobs and generated
-overlays remain in the local or runner temporary directory.
+The DSP remains proprietary. This source directory and the standalone
+verification workflow contain/upload only recipe sources and verification
+metadata. The integrated `p2812-ci/` image workflow also uses this extractor:
+its `normal-avm` and `lite-avm` sysupgrade images embed the verified DSP.
+Vendor OS images and extracted vendor filesystem trees are not release assets.
+See `P2812-OPENWRT.md` and the release's `AVM-DSL-PROVENANCE.txt`; the recipe's
+GPL does not relicense the proprietary DSP or establish redistribution rights.
 
 ## Generate the files overlay on Linux
 
@@ -32,8 +36,10 @@ OpenWrt build/ImageBuilder. It contains:
 - a first-boot UCI script setting only `network.dsl.firmware` and
   `network.dsl.vectoring=1`
 
-This overlay is not a full OpenWrt image or a U-Boot image. Image generation,
-installation and board-specific kernel/Wi-Fi changes are separate steps.
+This overlay is not a full OpenWrt image or a U-Boot image. The integrated
+ImageBuilder workflow copies the verified DSP and uses its own board-checked
+first-boot selector for both stock and AVM variants. Image installation and
+board-specific kernel/Wi-Fi changes are separate steps.
 Updating an existing installation requires retaining a local configuration/init
 backup, copying the verified files, selecting the two DSL options and restarting
 DSL deliberately. This CI never connects to or updates a modem.

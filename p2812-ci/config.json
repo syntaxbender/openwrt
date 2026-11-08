@@ -1,5 +1,5 @@
 {
-  "schema": 1,
+  "schema": 2,
   "repository": "syntaxbender/openwrt",
   "series": "25.12",
   "baseline": "25.12.6",
@@ -56,11 +56,32 @@
     "kmod-ltq-ptm-vr9",
     "ltq-vdsl-vr9-app",
     "kmod-rt2800-pci",
-    "wpad-basic-mbedtls"
+    "wpad-basic-mbedtls",
+    "dsl-vrx200-firmware-xdsl-a"
   ],
   "proven_worker_sha256": "6179dc66a3c8adf6bd36167c63fb7f4d6d4beb101486a9dfea84ccb9714d12c7",
   "proven_init_sha256": "6c857c22b207bbcc250280be0b707e5f3adb89249b958e50a1fea5f5485df355",
-  "DSL_policy": "Public images carry the GPL DSM init hook and stock OpenWrt DSP packages. Existing AVM DSP must be preserved/provisioned locally; AVM source-only extractor stays separate, no vendor blob/generated vendor overlay in public releases.",
+  "DSL_policy": "Four images: normal/lite x stock/AVM. AVM DSP is extracted and checksum-verified in CI, embedded only in AVM images. Proprietary vendor terms remain applicable; no private calibration or credentials are included.",
   "dsl_init_base_sha256": "f704597b4993e7c38b0a8b389df88bcfcfd59b7fa12715b97bec961a76efbb0a",
-  "dsl_init_patched_sha256": "4176e76daa09bb6bb31651f7c0c9d0b63bd93304a83b5f247d9db4d9565415fa"
+  "dsl_init_patched_sha256": "4176e76daa09bb6bb31651f7c0c9d0b63bd93304a83b5f247d9db4d9565415fa",
+  "dsl_variants": {
+    "stock": {
+      "version": "5.8.1.8.1.6",
+      "path": "/lib/firmware/lantiq-vrx200-a.bin",
+      "rootfs_file": "lib/firmware/xcpe_581816_580B11.bin",
+      "sha256": "1f50976644d7c6ed5adb0f6417a246b3e2016424c656ac955c554535b8eaf4b2",
+      "bytes": 898952,
+      "vectoring": 0,
+      "source": "Official signed OpenWrt dsl-vrx200-firmware-xdsl-a package"
+    },
+    "avm": {
+      "version": "5.9.1.4.0.7",
+      "path": "/lib/firmware/avm-vrx200-a-5.9.1.4.0.7.bin",
+      "rootfs_file": "lib/firmware/avm-vrx200-a-5.9.1.4.0.7.bin",
+      "sha256": "11b90138e69fd8b50df1b037b69d1f0e908750f344d895d8ac9b0862e3420d7a",
+      "bytes": 927124,
+      "vectoring": 1,
+      "source": "Official AVM FRITZ!Box 7490 / FRITZ!OS 7.62 image; extracted DSL DSP"
+    }
+  }
 }

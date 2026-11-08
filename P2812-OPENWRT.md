@@ -1,7 +1,7 @@
 # P-2812HNU-F1 OpenWrt builds
 
 This fork carries a small ImageBuilder recipe for **Zyxel P-2812HNU-F1**.
-Both variants use the official stable OpenWrt `lantiq/xrx200` device kernel.
+All four variants use the official stable OpenWrt `lantiq/xrx200` device kernel.
 The first reviewed baseline is **25.12.6**; the daily check follows stable
 **25.12.x** maintenance releases, excluding release candidates and snapshots.
 A new major series requires a reviewed config/key/compatibility update.
@@ -10,7 +10,7 @@ A new major series requires a reviewed config/key/compatibility update.
 
 The image-generation path follows OpenWrt's supported
 [ImageBuilder workflow](https://openwrt.org/docs/guide-user/additional-software/imagebuilder).
-Both variants select the existing upstream device profile with
+All variants select the existing upstream device profile with
 `make image PROFILE=zyxel_p-2812hnu-f1`. `normal` and `lite` are package
 variants of that one device profile, not new OpenWrt hardware profiles.
 The official ImageBuilder supplies the device definition, kernel, image
@@ -35,12 +35,17 @@ board. If a future fix needs a rebuilt package or kernel, use OpenWrt's
 package/target patch mechanisms and SDK or source build, rather than treating
 this ImageBuilder job as a build of modified fork sources.
 
-| Variant | Management | Retained | Removed |
-| --- | --- | --- | --- |
-| `normal` | LuCI + SSH | Official device defaults, VDSL/PTM, PPPoE, Wi-Fi, IPv6, USB/ATM support | None from official defaults |
-| `lite` | SSH | VDSL/PTM, PPPoE, Wi-Fi, IPv6, DHCP/DNS, firewall | LuCI/web/RPC UI stack, USB host/LED support, ATM/PPPoA |
+| Variant | Management | Selected DSL firmware |
+| --- | --- | --- |
+| `normal-stock` | LuCI + SSH, official device package defaults | OpenWrt Lantiq 5.8.1.8.1.6 |
+| `normal-avm` | LuCI + SSH, official device package defaults | Embedded AVM 5.9.1.4.0.7 |
+| `lite-stock` | SSH; LuCI/web/RPC UI, USB and ATM/PPPoA omitted | OpenWrt Lantiq 5.8.1.8.1.6 |
+| `lite-avm` | SSH; LuCI/web/RPC UI, USB and ATM/PPPoA omitted | Embedded AVM 5.9.1.4.0.7 |
 
-Both carry the same device-proven late PCI worker, which skips the rescan
+Both package variants retain Wi-Fi, VDSL/PTM, PPPoE, IPv6, DHCP/DNS and
+firewall support. `stock` and `avm` select the DSL DSP, not another kernel.
+
+All carry the same device-proven late PCI worker, which skips the rescan
 when RT3062 is already present and otherwise attempts at most one rescan per
 boot. It checks the board, the device-local 512-byte EEPROM and its local
 checksum before triggering discovery. It does not reset hardware or alter
@@ -55,21 +60,30 @@ DSL/Wi-Fi/NAT load, available memory and OOM behavior before any64MiB claim.
 
 ## Builds and releases
 
-The **P2812 OpenWrt normal and lite** workflow runs manually, after recipe
+The **P2812 OpenWrt normal/lite stock/AVM** workflow runs manually, after recipe
 changes on `main`, and daily. It verifies the official checksum signature
 using the pinned OpenWrt public key. The verification executable comes from
 a separately SHA-256-pinned official ImageBuilder bootstrap. APK feed
 signature checks remain enabled; changed keys or init bases fail closed.
 
-Each variant builds twice in fresh ImageBuilder directories. Package lists,
+The AVM DSP is extracted once per new release from the checksum-locked official
+AVM image and checked against its embedded MD5 and final SHA-256. It is copied
+only into the AVM variants. Vendor programs are not executed and images are
+not mounted. A changed vendor input, DSL payload or init base blocks the build.
+
+Each of the four variants builds twice in fresh ImageBuilder directories
+(eight builds total). Package lists,
 kernel bytes and sysupgrade bytes must match. The kernel must fit the5MiB
 partition and its decoded payload must fit the16MiB bootloader bound.
 The packaged rootfs is inspected with `unsquashfs4`, without mounting it.
-The helper scripts, startup link and preservation list must match the recipe.
+The helper scripts, startup link, preservation list, first-boot DSL selection
+and actual embedded DSP bytes must match the recipe. Stock images must not
+contain the AVM DSP; AVM images must contain its exact pinned bytes.
 
-A release contains the two sysupgrade images, their kernels and package
-manifests, recipe sources, `build-manifest.json` and `SHA256SUMS`. Publication
-occurs only after both variants pass; interrupted uploads remain drafts.
+A release contains four sysupgrade images, their kernels and package manifests,
+recipe sources, `build-manifest.json`, `AVM-DSL-PROVENANCE.txt` and `SHA256SUMS`
+(16 assets total). Publication occurs only after all four variants pass;
+interrupted uploads remain drafts.
 The source commit and exact ImageBuilder/package-input hashes are recorded.
 Feeds may change or retire older packages, so retain the input cache if you
 need a future rebuild with exactly the same package versions. Matching local
@@ -98,20 +112,37 @@ These recipes do not install/flash anything. The P2812 partition migration
 and bootloader size constraints must be checked separately. CI success is
 not physical validation of the generated sysupgrade images.
 
-## AVM DSL companion
+## DSL selection and AVM companion
 
-Both images include the GPL `dsl_control` DSM hook already verified on the
+All images include the GPL `dsl_control` DSM hook already verified on the
 baseline device. The official25.12.6 init base equals the reviewed25.12.0 base
 byte for byte; a changed init base blocks an automatic recipe build.
 
-The proprietary AVM5.9.1.4.0.7 DSP is **not embedded in public images**.
-`p2812-dsl/` retains the checksum-locked official AVM extraction recipe and
-its independent verification workflow. It never publishes the DSP or vendor
-images. The preservation list includes a locally installed
-`/lib/firmware/avm-vrx200-a-5.9.1.4.0.7.bin`; the first upgrade needs the same
-old-backup-list check described above. Preserve the existing DSL selection
-only when that firmware file is also preserved. Fresh images use stock
-OpenWrt DSL packages until AVM is deliberately provisioned locally.
+The AVM variants **embed** the proprietary5.9.1.4.0.7 DSP extracted from the
+official FRITZ!Box7490 / FRITZ!OS7.62 image. The source tree contains only the
+extraction recipe and hashes; firmware is obtained in the runner. The DSP
+remains proprietary and is not relicensed under the recipe's GPL. The vendor
+image URL and both input/output hashes are recorded in the release provenance.
+This provenance does not claim independently verified redistribution permission
+or cryptographic verification of the vendor's outer image signature.
+
+On initial boot after installation or upgrade, the board-checked
+`99-p2812-dsl-profile` script verifies the chosen DSP hash and sets only
+`network.dsl.firmware` and `network.dsl.vectoring`: stock selects the official
+AnnexA path and DSM0; AVM selects the embedded file and DSM1. This also applies
+when preserving settings: choosing an image deliberately selects its DSL mode.
+WAN credentials, VLAN, LAN and Wi-Fi settings are retained. A wrong board or
+missing/corrupt payload cannot trigger the DSL configuration changes.
+
+The preservation list still supports a locally provisioned AVM file. A stock
+upgrade may retain that file in overlay, but its first-boot selector chooses
+the stock DSP. AVM variants do not require a prior AVM installation; they
+still require the device's own EEPROM and checksum. The first-upgrade
+calibration backup check described above remains necessary.
+
+The separate **P2812 OpenWrt AVM DSL verification** workflow still uploads
+only verification metadata and recipe sources. The integrated image workflow
+is responsible for embedding the DSP in its two AVM sysupgrade images.
 
 Vectoring capability/request and the line's negotiated active vectoring are
 different facts. The device baseline requested full mode1; active vectoring
@@ -126,10 +157,15 @@ this source checkout:
 ```sh
 python3 -B -m unittest discover -s p2812-ci/tests -p 'test_*.py'
 python3 -B p2812-ci/build.py prepare --work /tmp/p2812-work --version 25.12.6
-python3 -B p2812-ci/build.py build --work /tmp/p2812-work --flavor normal --round r1
-python3 -B p2812-ci/build.py build --work /tmp/p2812-work --flavor normal --round r2
-python3 -B p2812-ci/build.py build --work /tmp/p2812-work --flavor lite --round r1
-python3 -B p2812-ci/build.py build --work /tmp/p2812-work --flavor lite --round r2
+python3 -B p2812-ci/build.py prepare-avm --work /tmp/p2812-work
+for flavor in normal lite; do
+  for dsl in stock avm; do
+    for round in r1 r2; do
+      python3 -B p2812-ci/build.py build --work /tmp/p2812-work \
+        --flavor "$flavor" --dsl "$dsl" --round "$round"
+    done
+  done
+done
 python3 -B p2812-ci/build.py bundle --work /tmp/p2812-work
 ```
 
